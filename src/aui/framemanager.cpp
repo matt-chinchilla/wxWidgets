@@ -3998,9 +3998,15 @@ void wxAuiManager::Repaint(wxDC* dc)
 
     // if the frame has a toolbar, the client area
     // origin will not be (0,0).
+    // The WASM port's client DC of a top-level window already starts at the
+    // client area origin (src/wasm/dcclient.cpp), below the frame's menu bar,
+    // as the panes the sizer lays out do; shifting it again drew every caption
+    // a menu bar's height below its pane, over the pane's first row.
+#ifndef __EMSCRIPTEN__
     wxPoint pt = m_frame->GetClientAreaOrigin();
     if (pt.x != 0 || pt.y != 0)
         dc->SetDeviceOrigin(pt.x, pt.y);
+#endif
 
     // render all the items
     Render(dc);
@@ -4157,10 +4163,13 @@ void wxAuiManager::UpdateButtonOnScreen(wxAuiDockUIPart* button_ui_part,
     wxClientDC cdc(m_frame);
 
     // if the frame has a toolbar, the client area
-    // origin will not be (0,0).
+    // origin will not be (0,0). Not on WASM: its client DC starts there already
+    // (see Repaint).
+#ifndef __EMSCRIPTEN__
     wxPoint pt = m_frame->GetClientAreaOrigin();
     if (pt.x != 0 || pt.y != 0)
         cdc.SetDeviceOrigin(pt.x, pt.y);
+#endif
 
     if (hit_test->pane)
     {
