@@ -4,6 +4,10 @@
 // Author:      Adam Hilss
 // Copyright:   (c) 2022 Adam Hilss
 // Licence:     LGPL v2
+// Modified by Circuit Center Inc on 2026-11-23: a keydown of a sign key typed with
+//   Shift while Ctrl, Alt or Meta is held takes the shifted sign (the DOM key) as its
+//   key code, and its keyup carries the same code, so such chords reach the app as a
+//   desktop wx sends them.
 /////////////////////////////////////////////////////////////////////////////
 
 #include "wx/wxprec.h"
@@ -13,6 +17,9 @@
 #include "wx/utils.h"
 
 #include <emscripten/html5.h>
+
+#include <map>
+#include <string>
 
 namespace
 {
@@ -236,6 +243,67 @@ void SetKeyboardModifiers(const EmscriptenKeyboardEvent& emscriptenEvent,
     event->SetRawControlDown(emscriptenEvent.ctrlKey);
 }
 
+// The DOM codes of the sign keys whose character changes with Shift on a US
+// layout (and, on other layouts, on the same physical keys).
+bool IsSignKeyCode(const std::string& domKeyCode)
+{
+    static const char *const kSignKeyCodes[] =
+    {
+        "Minus", "Equal", "BracketLeft", "BracketRight", "Backslash",
+        "Semicolon", "Quote", "Backquote", "Comma", "Period", "Slash",
+        "IntlBackslash"
+    };
+
+    for (const char *code : kSignKeyCodes)
+    {
+        if (domKeyCode == code)
+            return true;
+    }
+
+    return false;
+}
+
+// A browser sends no keypress while Ctrl, Alt or Meta is held, so a keydown
+// is all the app gets for such a chord, and the code table gives the key's
+// unshifted sign: Ctrl+Shift+Comma arrived as Ctrl+Shift+',' where a desktop
+// wx sends Ctrl+Shift+'<'. For a keydown of a sign key with Shift AND another
+// modifier held, take the sign the DOM key names (one printable ASCII
+// character that is no letter and no digit), as the keypress branch does.
+// Returns WXK_NONE when the rule does not apply.
+int ShiftedSignKeyCode(const wxKeyEvent& event,
+                       const std::string& domKeyCode,
+                       const std::string& charText)
+{
+    if (!event.ShiftDown() || (event.GetModifiers() & ~wxMOD_SHIFT) == 0)
+        return WXK_NONE;
+
+    if (charText.size() != 1)
+        return WXK_NONE;
+
+    const unsigned char ch = static_cast<unsigned char>(charText.at(0));
+
+    if (ch < 0x21 || ch > 0x7E)
+        return WXK_NONE;
+
+    if ((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= 'a' && ch <= 'z'))
+        return WXK_NONE;
+
+    if (!IsSignKeyCode(domKeyCode))
+        return WXK_NONE;
+
+    return ch;
+}
+
+// The key code each held sign key's keydown was given by ShiftedSignKeyCode,
+// by DOM code, so its keyup carries the same code whatever modifiers are
+// released first (the app's pressed key set is keyed by it).
+std::map<std::string, int>& ShiftedSignKeysDown()
+{
+    static std::map<std::string, int> keysDown;
+    return keysDown;
+}
+
 void InitKeyEvent(int emscriptenEventType,
                   const EmscriptenKeyboardEvent& emscriptenEvent,
                   wxKeyEvent *event)
@@ -264,6 +332,35 @@ void InitKeyEvent(int emscriptenEventType,
     else if (!domKeyCode.empty())
     {
         event->m_keyCode = DOMKeyCodeToWXKeyCode(domKeyCode.c_str());
+
+        std::map<std::string, int>& signKeysDown = ShiftedSignKeysDown();
+
+        if (emscriptenEventType == EMSCRIPTEN_EVENT_KEYDOWN)
+        {
+            const int signKeyCode =
+                ShiftedSignKeyCode(*event, domKeyCode, charText);
+
+            if (signKeyCode != WXK_NONE)
+            {
+                event->m_keyCode = signKeyCode;
+                signKeysDown[domKeyCode] = signKeyCode;
+            }
+            else
+            {
+                signKeysDown.erase(domKeyCode);
+            }
+        }
+        else if (emscriptenEventType == EMSCRIPTEN_EVENT_KEYUP)
+        {
+            std::map<std::string, int>::iterator it =
+                signKeysDown.find(domKeyCode);
+
+            if (it != signKeysDown.end())
+            {
+                event->m_keyCode = it->second;
+                signKeysDown.erase(it);
+            }
+        }
     }
     else
     {
