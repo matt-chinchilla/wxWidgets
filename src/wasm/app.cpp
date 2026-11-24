@@ -4,6 +4,9 @@
 // Author:      Adam Hilss
 // Copyright:   (c) 2022 Adam Hilss
 // Licence:     LGPL v2
+// Modified by Circuit Center Inc on 2026-11-23: the beforeunload callback sends no
+//   close event (a close run inside the browser's synchronous handler trapped at
+//   its first suspend) and answers that the page may unload.
 /////////////////////////////////////////////////////////////////////////////
 
 #include "wx/wxprec.h"
@@ -1309,16 +1312,18 @@ EM_BOOL FocusCallback(int eventType,
 
 const char *UnloadCallback(int WXUNUSED(eventType),
                            const void *WXUNUSED(emscriptenEvent),
-                           void *userData)
+                           void *WXUNUSED(userData))
 {
     //printf("UnloadCallback\n");
-    wxApp* app = static_cast<wxApp*>(userData);
 
-    wxCloseEvent event(wxEVT_CLOSE_WINDOW);
-    event.SetCanVeto(true);
-    app->HandleCloseEvent(&event);
-
-    return event.GetVeto() ? "veto" : "";
+    // The browser runs this handler synchronously and the page goes away
+    // right after it, so a close started here can never complete: the app's
+    // close path waits on its own work (a tool switch, a dialog), and a wait
+    // in a plain DOM entry traps with SuspendError. Send no close event and
+    // let the page unload. An app that wants the browser's leave prompt sets
+    // its own beforeunload handler (window.onbeforeunload), which this
+    // callback does not touch.
+    return "";
 }
 
 }
